@@ -1,0 +1,114 @@
+name: Happy Path
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  happy-path:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v1
+      - uses: actions/setup-node@v1
+        with:
+          node-version: 12
+      # sent package/repository as environment variable
+      - run: echo "::set-env name=SHA_SHORT::${GITHUB_SHA:0:7}"
+      - run: echo "::set-env name=PKG_NAME::happy-path-$PULL_REQUEST_NUMBER-$SHA_SHORT"
+        env:
+          PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
+      # create temporary directory and set PKG_DIRECTORY environment variable
+      - run: echo "::set-env name=PKG_DIRECTORY::$(mktemp -d)/$PKG_NAME"
+      - run: mkdir "$PKG_DIRECTORY"
+      # create repository
+      - uses: octokit/request-action@v2.x
+        with:
+          route: POST /orgs/:org/repos
+          org: semantic-release-test
+          name: ${{ env.PKG_NAME }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.SEMANTIC_RELEASE_BOT_GITHUB_TOKEN }}
+      # init git and add remote
+      - run: |
+          git init
+          git remote add origin "https://github.com/semantic-release-test/$PKG_NAME.git"
+        working-directory: ${{ env.PKG_DIRECTORY }}
+      # create readme
+      - run: |
+          cat <<EOT >> README.md
+          # $PKG_NAME
+
+          - pull request: $PULL_REQUEST_URL
+          - commit: $PULL_REQUEST_URL/commits/$SHA_SHORT
+          - package: [@semantic-release-test/$PKG_NAME](https://npmjs.com/package/@semantic-release-test/$PKG_NAME)
+          EOT
+        working-directory: ${{ env.PKG_DIRECTORY }}
+        env:
+          PULL_REQUEST_URL: ${{ github.event.pull_request.html_url }}
+      # init npm and install semantic-release
+      - run: |
+          npm init -y
+          # set name, version, and publishConfig
+          node -e 'fs.writeFileSync("package.json", JSON.stringify(Object.assign(require("./package.json"), { name: "@semantic-release-test/" + process.env.PKG_NAME, version: "0.0.0-development", publishConfig: { access: "public" }}), null, 2))' 
+          npm install "github:semantic-release/semantic-release#$GITHUB_SHA"
+        working-directory: ${{ env.PKG_DIRECTORY }}
+      # ignore node_modules
+      - run: echo "node_modules" > .gitignore
+        working-directory: ${{ env.PKG_DIRECTORY }}
+      # create first commit and push it to remote
+      - run: |
+          git config --global user.email "32174276+semantic-release-bot@users.noreply.github.com"
+          git config --global user.name "Semantic Release Bot"
+          git add .
+          git commit -m "feat: initial version"
+          git push "https://semantic-release-bot:$GITHUB_TOKEN@github.com/semantic-release-test/$PKG_NAME.git" HEAD
+        working-directory: ${{ env.PKG_DIRECTORY }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.SEMANTIC_RELEASE_BOT_GITHUB_TOKEN }}
+      # now run semantic-release and hope for the best
+      # GITHUB_* environment variables cannot be set using ::set-env, so we have to set it within the same `run`
+      # We set GITHUB_EVENT_PATH to an empty value so that semantic-release does not think its triggered
+      # by a pull request, see https://github.com/pvdlg/env-ci/blob/59bb812f51f3d6a518f5f8aedf9eb74cc1bf6782/services/github.js#L7-L14
+      - name: "npx semantic-release"
+        run: |
+          export GITHUB_REPOSITORY=semantic-release-test/$PKG_NAME
+          export GITHUB_WORKSPACE=$(pwd)
+          export GITHUB_REF=refs/heads/master
+          export GITHUB_EVENT_NAME=push
+          export GITHUB_EVENT_PATH=
+          npx semantic-release --debug
+        working-directory: ${{ env.PKG_DIRECTORY }}
+        env:
+          NPM_TOKEN: ${{ secrets.SEMANTIC_RELEASE_BOT_NPM_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.SEMANTIC_RELEASE_BOT_GITHUB_TOKEN }}
+      # check if package was published
+      - run: npm info .
+        working-directory: ${{ env.PKG_DIRECTORY }}
+      # check if release was created
+      - uses: octokit/request-action@v2.x
+        id: get_latest_release
+        with:
+          route: GET /repos/:owner/:repo/releases/latest
+          owner: semantic-release-test
+          repo: ${{ env.PKG_NAME }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.SEMANTIC_RELEASE_BOT_GITHUB_TOKEN }}
+      - run: |
+          cat <<EOT
+          ${{ steps.get_latest_release.outputs.data }}
+          EOT
+      # cleanup
+      - name: npm unpublish
+        run: |
+          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > .npmrc
+          npm unpublish --force
+        working-directory: ${{ env.PKG_DIRECTORY }}
+        env:
+          NPM_TOKEN: ${{ secrets.SEMANTIC_RELEASE_BOT_NPM_TOKEN }}
+      - uses: octokit/request-action@v2.x
+        with:
+          route: DELETE /repos/:owner/:repo
+          owner: semantic-release-test
+          repo: ${{ env.PKG_NAME }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.SEMANTIC_RELEASE_BOT_GITHUB_TOKEN }}
