@@ -45,6 +45,7 @@
     "p-reduce": "^2.0.0",
     "read-pkg-up": "^7.0.0",
     "resolve-from": "^5.0.0",
+    "semantic-release": "git+https://git@github.com/stvnwrgs/semantic-release.git",
     "semver": "^6.0.0",
     "signale": "^1.2.1",
     "yargs": "^15.0.1"
